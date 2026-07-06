@@ -12,7 +12,7 @@ obsidian-llm-wiki/
 ├── 03-projects/       프로젝트별 노트 (아래 참고)
 ├── 04-resources/      강의 노트, 참고자료
 ├── 05-archive/        완료된 항목 보관
-├── docs/              개발지시서, 초기 안내 노트
+├── docs/              개발지시서, 초기 안내 노트 (로컬 전용, git 미추적)
 └── _system/           템플릿, 자동화 스크립트, CLAUDE.md
     ├── templates/     daily-note / project-note / error-log / interview-qa
     └── scripts/       daily_note_gen.py
