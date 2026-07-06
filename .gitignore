@@ -1,3 +1,22 @@
+# Obsidian - local workspace state (device-specific)
 .obsidian/workspace.json
 .obsidian/workspace-mobile.json
+.obsidian/cache
+
+# Obsidian - plugin data (may contain local settings or API keys)
+.obsidian/plugins/*/data.json
+
+# Obsidian trash
 .trash/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python (scripts)
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
