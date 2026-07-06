@@ -9,6 +9,9 @@
 # Obsidian trash
 .trash/
 
+# Local-only docs
+docs/
+
 # OS files
 .DS_Store
 Thumbs.db
