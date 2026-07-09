@@ -97,11 +97,11 @@
  └───────────────┬───────────────────────────┘
                  ▼
  ┌─────────────────────────────────────────┐
- │  llm_agent.py                             │
- │  - 비교 리포트 생성 프롬프트                  │
- │  - 매수 타이밍 판단 프롬프트                  │
- │  - 카테고리 베스트픽(가성비/성능) 추천 프롬프트  │
- │  - JSON 스키마 강제 + 검증                   │
+ │  llm_agent.py — LangGraph StateGraph       │
+ │  InputValidation → ScoreCompute →          │
+ │  PromptRouter → LLMCall ⇄ JSONValidation   │
+ │  (검증 실패 시 LLMCall로 재시도) → Persist    │
+ │  * 세 작업(비교/매수타이밍/베스트픽) 공유        │
  └───────────────┬───────────────────────────┘
                  ▼
  ┌─────────────────────────────────────────┐
@@ -122,6 +122,7 @@
 | DB | SQLite(MVP) → PostgreSQL(확장 시) | 시계열 데이터 늘어나면 이전 |
 | 스케줄러 | APScheduler (Python 프로세스 내 실행) 또는 Windows 작업 스케줄러 | cron 대체 (Windows 환경) |
 | LLM | EXAONE-3.5-7.8B-Instruct (Colab Pro, 운영) / EXAONE-3.5-2.4B-Instruct (Ollama, 로컬 개발) | 4번 섹션에서 상세 |
+| LLM 오케스트레이션 | LangGraph (`langgraph` 패키지) | 비교/매수타이밍/베스트픽 3개 작업이 공유하는 "생성→검증→재시도" 흐름을 StateGraph로 formalize. 4.8절 참고 |
 | 프론트엔드 | Flask 템플릿(Jinja2) + Chart.js (가격 추이 그래프) | O2O 프로젝트 패턴 재사용 |
 | 시각화 | Chart.js 또는 Plotly | 가격 추이, 비교 레이더 차트 |
 
@@ -236,6 +237,77 @@ Qwen 계열을 계속 쓰기보다 이번 프로젝트에서는 **EXAONE-3.5 계
   "best_value": {"product": "B", "reason": "..."}
 }
 ```
+
+### 4.8 LangGraph 기반 실행 파이프라인
+비교/매수타이밍/베스트픽 세 작업 모두 "프롬프트 조립 → LLM 호출 → JSON 검증 → 실패 시 재시도 → 저장"이라는 동일한 흐름을 공유한다. 이 공통 흐름을 함수 3벌로 중복 구현하는 대신, LangGraph의 `StateGraph`로 한 번만 구현하고 `task_type`으로 분기한다.
+
+> k-safety-law-rag에서는 동일한 개념을 위해 `langgraph` 패키지 없이 자체 경량 그래프 모듈(`question_graph.py`)을 만들었다. 이번에는 실제 `langgraph` 라이브러리를 사용해 두 접근을 실제로 비교해본다 (의존성 없는 자체 구현 vs 라이브러리 사용).
+
+**State 정의**
+```python
+from typing import TypedDict, Literal, Optional
+
+class LLMTaskState(TypedDict):
+    task_type: Literal["compare", "buy_timing", "best_pick"]
+    input_data: dict                 # analysis.py가 계산한 점수/통계/스펙
+    prompt: Optional[str]
+    raw_response: Optional[str]
+    parsed_response: Optional[dict]
+    validation_error: Optional[str]
+    retry_count: int
+    max_retries: int                 # 기본값 2
+    result: Optional[dict]           # 최종 검증된 결과
+```
+
+**노드 구성**
+| 노드 | 역할 |
+|---|---|
+| `input_validation_node` | `category_id`/`product_ids`가 실제 DB에 존재하는지 확인. 실패 시 즉시 종료 |
+| `score_compute_node` | `analysis.py` 호출 — `task_type`에 필요한 가격 통계/성능·가성비 점수만 계산 |
+| `prompt_router_node` | `task_type`에 따라 4.5/4.6/4.7 중 해당 프롬프트 템플릿을 조립 |
+| `llm_call_node` | EXAONE 모델 호출, `raw_response`에 저장 |
+| `json_validation_node` | 스키마 검증. 성공 시 `result` 채움, 실패 시 `validation_error` + `retry_count += 1` |
+| `persist_node` | `task_type`에 맞는 테이블(comparison_reports / category_recommendations 등)에 저장 |
+
+**그래프 연결 (설계 스케치)**
+```python
+# llm_agent.py
+from langgraph.graph import StateGraph, END
+
+graph = StateGraph(LLMTaskState)
+graph.add_node("input_validation", input_validation_node)
+graph.add_node("score_compute", score_compute_node)
+graph.add_node("prompt_router", prompt_router_node)
+graph.add_node("llm_call", llm_call_node)
+graph.add_node("json_validation", json_validation_node)
+graph.add_node("persist", persist_node)
+
+graph.set_entry_point("input_validation")
+graph.add_edge("input_validation", "score_compute")
+graph.add_edge("score_compute", "prompt_router")
+graph.add_edge("prompt_router", "llm_call")
+graph.add_edge("llm_call", "json_validation")
+
+def _route_after_validation(state: LLMTaskState) -> str:
+    if state["validation_error"] and state["retry_count"] < state["max_retries"]:
+        return "retry"
+    return "done"
+
+graph.add_conditional_edges(
+    "json_validation",
+    _route_after_validation,
+    {"retry": "llm_call", "done": "persist"},
+)
+graph.add_edge("persist", END)
+
+llm_pipeline = graph.compile()
+
+# 호출 예시
+# llm_pipeline.invoke({"task_type": "best_pick", "input_data": scores, "retry_count": 0, "max_retries": 2, ...})
+```
+
+- 재시도 횟수(`max_retries`)를 초과하고도 검증에 실패하면 `result`에 "확인 불가" 수준의 안전한 fallback 메시지를 채워서 종료한다 (조용히 실패하지 않고, 프론트에는 "AI 응답 생성에 실패했습니다" 같은 명확한 상태를 보여준다).
+- 세 작업의 차이는 오직 `prompt_router_node`의 분기와 `persist_node`의 저장 테이블뿐이라, 새 LLM 작업 유형이 추가돼도 그래프 구조를 그대로 재사용할 수 있다.
 
 ---
 
@@ -463,7 +535,7 @@ naver-shopping-guide/
 ├── collector.py                # 네이버 API 수집 모듈
 ├── scheduler.py                 # 가격 주기 수집
 ├── analysis.py                  # 가격 통계/스펙 비교 계산
-├── llm_agent.py                  # LLM 프롬프트/호출/JSON 검증
+├── llm_agent.py                  # LangGraph StateGraph — 프롬프트 조립/모델 호출/JSON 검증/재시도/저장
 ├── db.py                         # DB 연결 및 스키마 초기화
 ├── data/
 │   └── specs/                    # 카테고리별 수동 스펙 큐레이션 JSON
@@ -513,10 +585,10 @@ DB_PATH=data/app.db
 - [ ] 카테고리별 성능 점수/가성비 점수 계산(`analysis.py`, 5.4 방식) 구현 + 단위 테스트
 
 ### Phase 3 — LLM 비교/추천
-- [ ] `llm_agent.py`: 기능 비교 프롬프트 + JSON 검증
-- [ ] 매수 타이밍 판단 프롬프트
-- [ ] 카테고리 베스트픽(가성비/성능) 추천 프롬프트 + `category_recommendations` upsert 로직
-- [ ] 로컬 EXAONE-3.5-2.4B-Instruct로 프롬프트 반복 검증
+- [ ] `langgraph` 설치, `llm_agent.py`에 StateGraph 구축 (4.8절: input_validation→score_compute→prompt_router→llm_call⇄json_validation→persist)
+- [ ] 기능 비교 프롬프트(4.5) + 매수 타이밍 판단 프롬프트(4.6) + 카테고리 베스트픽 프롬프트(4.7)를 `prompt_router_node`에 연결
+- [ ] 재시도 초과 시 fallback 메시지 처리 확인
+- [ ] 로컬 EXAONE-3.5-2.4B-Instruct로 그래프 전체 흐름 반복 검증
 
 ### Phase 4 — 백엔드/프론트엔드
 - [ ] Flask REST API 구현 (8번 섹션 엔드포인트)
@@ -540,7 +612,7 @@ DB_PATH=data/app.db
 ## 13. 테스트 전략
 - `analysis.py`의 통계 계산 함수는 알려진 입력값으로 단위 테스트 (평균/백분위 계산 정확성 검증 — LLM이 잘못된 숫자를 인용하지 않도록 원천 차단)
 - `analysis.py`의 성능/가성비 점수 계산 함수도 알려진 스펙 조합으로 단위 테스트 (Min-Max 정규화, `lower_better`/`boolean_bonus` 방향성 처리가 의도대로 동작하는지 검증)
-- `llm_agent.py`의 JSON 파싱은 실패 케이스(스키마 어긋난 응답)에 대한 재시도 로직 테스트
+- `llm_agent.py`의 LangGraph 파이프라인은 (a) 첫 시도에 성공하는 케이스, (b) N번 실패 후 재시도로 성공하는 케이스, (c) `max_retries` 초과로 fallback되는 케이스 세 가지를 모두 단위 테스트
 - API 엔드포인트는 실제 네이버 API 대신 mock 응답으로 통합 테스트
 
 ---
@@ -560,3 +632,4 @@ DB_PATH=data/app.db
 3. 크롤링이 필요한 시점이 오면 반드시 먼저 사용자에게 확인 — robots.txt 준수, 요청 간격 확보 없이 진행하지 않는다.
 4. 로컬 개발 중에는 `EXAONE-3.5-2.4B-Instruct`로 반복 검증하고, 데모/발표 직전에만 Colab `EXAONE-3.5-7.8B-Instruct`로 전환한다.
 5. `.env`, `data/app.db`는 git에 커밋하지 않는다 (`.gitignore` 확인).
+6. LLM 작업(비교/매수타이밍/베스트픽)을 새로 추가할 때는 `llm_agent.py`의 기존 함수 형태로 새로 짜지 말고, 4.8절의 LangGraph `prompt_router_node`/`persist_node`에 분기를 추가하는 방식으로 확장한다 (그래프 구조를 중복 구현하지 않는다).
