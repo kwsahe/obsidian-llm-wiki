@@ -26,13 +26,14 @@ obsidian-llm-wiki/
 | [k-safety-law-rag](03-projects/k-safety-law-rag/README.md) | 산업안전보건법·중대재해처벌법 기반 법령 검색·판단 RAG | [kwsahe/k-safety-law-rag](https://github.com/kwsahe/k-safety-law-rag) |
 | [construction-vl-agent](03-projects/construction-vl-agent/README.md) | 건설현장 CCTV 사고 영상 분석 Vision-Language Agent | [kwsahe/construction-accident-vl-agent](https://github.com/kwsahe/construction-accident-vl-agent) |
 | [o2o-forecasting](03-projects/o2o-forecasting/README.md) | 실거래가 기반 인테리어 수요 예측 파이프라인 | [kwsahe/O2O-demand-forecasting-solution](https://github.com/kwsahe/O2O-demand-forecasting-solution) |
+| [naver-shopping-guide](03-projects/naver-shopping-guide/CLAUDE.md) | 네이버쇼핑 경쟁 상품 비교·구매 가이드 자동화 (설계 완료, 구현 예정) | - |
 | [job-search](03-projects/job-search/README.md) | 취업 준비 활동, 지원/면접 현황 ([companies.md](03-projects/job-search/companies.md)) | - |
 
 각 프로젝트 노트는 실제 개발일지(devlog)와 GitHub 커밋 이력을 근거로 작성되며, 재사용 가치가 높은 버그는 `errors/` 하위에 개별 기록으로 남긴다 (예: [k-safety-law-rag/errors](03-projects/k-safety-law-rag/errors)).
 
 ## 자동화
 
-- **템플릿**: Templater 문법 기반 4종(`_system/templates/`) — 새 노트 생성 시 커맨드 팔레트에서 바로 적용
+- **템플릿**: Templater 문법 기반 6종(`_system/templates/`) — 새 노트 생성 시 커맨드 팔레트에서 바로 적용
 - **대시보드**: [01-atlas/dashboard.md](01-atlas/dashboard.md) — Dataview로 진행 중 프로젝트, 최근 일일 노트, 미해결 에러, 면접 기록을 자동 집계
 - **일일 노트 자동 생성**: `python _system/scripts/daily_note_gen.py` — 오늘 날짜 노트를 `02-calendar/`에 생성 (이미 있으면 스킵)
 
