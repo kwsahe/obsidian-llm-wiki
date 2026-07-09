@@ -90,9 +90,10 @@ kwsahe-brain/
 │   └── job-search/
 ├── 04-resources/      ← 강의 노트, 참고자료, 링크
 ├── 05-archive/        ← 완료 보관
+├── 06-ideas/          ← 프로젝트 영감/아이디어 노트
 └── _system/           ← 템플릿, 이 CLAUDE.md
     ├── CLAUDE.md      ← 지금 이 파일
-    └── templates/
+    └── templates/     ← daily-note / project-note / error-log / interview-qa / idea-note / claude-tool-note
 ```
 
 ---
