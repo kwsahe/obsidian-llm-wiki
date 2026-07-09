@@ -110,7 +110,7 @@
 | 백엔드 | Flask (O2O 프로젝트와 동일 스택) | 기존 코드 재사용 용이 |
 | DB | SQLite(MVP) → PostgreSQL(확장 시) | 시계열 데이터 늘어나면 이전 |
 | 스케줄러 | APScheduler (Python 프로세스 내 실행) 또는 Windows 작업 스케줄러 | cron 대체 (Windows 환경) |
-| LLM | Qwen2.5-14B-Instruct (Colab Pro, 운영) / qwen2.5:3b (Ollama, 로컬 개발) | 4번 섹션에서 상세 |
+| LLM | EXAONE-3.5-7.8B-Instruct (Colab Pro, 운영) / EXAONE-3.5-2.4B-Instruct (Ollama, 로컬 개발) | 4번 섹션에서 상세 |
 | 프론트엔드 | Flask 템플릿(Jinja2) + Chart.js (가격 추이 그래프) | O2O 프로젝트 패턴 재사용 |
 | 시각화 | Chart.js 또는 Plotly | 가격 추이, 비교 레이더 차트 |
 
@@ -128,19 +128,20 @@
 
 | 모델 | 실행 위치 | 장점 | 단점 |
 |---|---|---|---|
-| **Qwen2.5-14B-Instruct** | Colab Pro (FastAPI+ngrok) | k-safety-law-rag에서 이미 검증됨 — 한국어 품질, JSON 구조 준수 우수. 기존 Colab 서빙 인프라 그대로 재사용 가능 | Colab 세션 유지 필요, ngrok 연결 이슈 가능성(과거 프로젝트에서 실제 발생) |
-| **qwen2.5:3b (Ollama)** | 로컬 GPU | O2O 프로젝트에서 이미 검증됨 — 설치 간단, 빠른 반복 개발에 적합, 별도 인프라 불필요 | 14B 대비 비교 근거의 디테일·일관성이 떨어질 수 있음 |
-| **EXAONE-3.5-7.8B-Instruct** | Colab | 한국어 특화 모델, construction-vl-agent/k-safety-law-rag 비교 테스트 이력 있음 | 과거 비교에서 Qwen 계열이 근소 우세했던 이력 (환각 조항, 긴 컨텍스트 안정성 등) |
+| **EXAONE-3.5-7.8B-Instruct** | Colab Pro | LG AI연구원의 한국어 특화 모델. k-safety-law-rag에서 이미 비교 테스트한 이력이 있고 **Colab 서빙 노트북(`exaone_colab_pro_server.ipynb`)도 이미 만들어져 있어 그대로 재사용 가능**. 완전 무료(오픈 가중치) | Colab 세션 유지 필요, 과거 VL/법령판단 태스크 비교에서 Qwen에 근소하게 밀렸던 이력(이번 비교·카피 생성 태스크에서는 재검증 가치 있음) |
+| **EXAONE-3.5-2.4B-Instruct** | Ollama 로컬 | 로컬 GPU에서 가볍게 실행 가능(설치 시 최신 태그 확인: `ollama pull exaone3.5:2.4b`), 완전 무료 | 7.8B 대비 비교 근거의 디테일·일관성이 떨어질 수 있음 |
+| ~~Qwen2.5-14B-Instruct / Qwen2.5:3b~~ | ~~Colab Pro / Ollama~~ | k-safety-law-rag·O2O에서 이미 검증됨 | 이번 프로젝트는 EXAONE으로 진행하기로 확정 (다른 모델도 써보고 싶다는 요청 반영) |
+| ~~Solar Pro / Solar Mini (Upstage)~~ | ~~API~~ | 한국 기업의 한국어 특화 모델 | 무료 체험 종료(2026-03-02) 이후 API 유료 전환, 오픈 가중치판(Solar-Open-100B)은 102B라 Colab Pro로 자체 호스팅하기엔 과함 → 기각 |
 
-### 4.3 최종 추천 — 이원화 전략
-기존 두 프로젝트에서 이미 검증한 패턴을 그대로 재사용한다.
+### 4.3 최종 추천 — EXAONE 이원화 전략
+Qwen 계열을 계속 쓰기보다 이번 프로젝트에서는 **EXAONE-3.5 계열로 진행**하기로 확정했다 (다른 모델도 실제로 써보고 싶다는 요청 반영). 기존 두 프로젝트에서 검증한 "작은 모델로 반복 → 큰 모델로 확정" 이원화 패턴은 그대로 유지한다.
 
-- **로컬 개발/반복 테스트 단계**: `qwen2.5:3b` (Ollama, 로컬 GPU) — 프롬프트를 빠르게 여러 번 고쳐가며 검증할 때 사용. 비용 없음, 응답 빠름.
-- **최종 데모/운영 단계**: `Qwen2.5-14B-Instruct` (Colab Pro) — k-safety-law-rag에서 쓰던 FastAPI + ngrok 서빙 노트북을 그대로 재사용하면 새로 구축할 필요 없이 모델명만 바꿔서 붙일 수 있다.
+- **로컬 개발/반복 테스트 단계**: `EXAONE-3.5-2.4B-Instruct` (Ollama, 로컬 GPU) — 프롬프트를 빠르게 여러 번 고쳐가며 검증할 때 사용. 비용 없음, 응답 빠름.
+- **최종 데모/운영 단계**: `EXAONE-3.5-7.8B-Instruct` (Colab Pro) — k-safety-law-rag의 `exaone_colab_pro_server.ipynb`를 그대로 복사해와서 붙이면 새로 구축할 필요가 없다.
 
-이렇게 하면 "작은 모델로 빠르게 반복 → 큰 모델로 품질 확정"이라는, 이미 포트폴리오 전체에서 일관되게 써온 개발 방식을 그대로 유지할 수 있어 개발 속도와 설명력 모두에서 이득이다.
+두 단계 모두 완전 무료(오픈 가중치, 자체 호스팅)라서 API 과금 걱정 없이 진행할 수 있다.
 
-> ⚠️ 참고: 이 추천은 그동안 프로젝트에서 실제로 검증된 모델 기준이다. 실제 구현 시점에 더 최신/더 나은 한국어 모델이 나와 있을 수 있으니, Ollama/Hugging Face에서 "한국어 성능 + 구조화 출력" 기준으로 한 번 더 최신 정보를 확인하고 시작할 것.
+> ⚠️ 참고: 이 추천은 그동안 프로젝트에서 실제로 검증된 모델 기준이다. 실제 구현 시점에 더 최신/더 나은 한국어 모델(EXAONE 4.0 등 후속 버전 포함)이 나와 있을 수 있으니, Hugging Face/Ollama에서 "한국어 성능 + 구조화 출력" 기준으로 한 번 더 최신 정보를 확인하고 시작할 것.
 
 ### 4.4 프롬프트 설계 원칙
 1. **숫자는 코드에서 계산, LLM은 해석만**: 최고가/최저가/평균가/현재가 백분위는 Python으로 미리 계산해서 프롬프트에 숫자로 넣는다. LLM에게 "계산해줘"라고 시키지 않는다 (환각 위험).
@@ -386,7 +387,7 @@ naver-shopping-guide/
 │   └── compare_report.html
 ├── static/
 ├── notebooks/
-│   └── qwen25_14b_colab_server.ipynb   # k-safety-law-rag 노트북 재사용/복사
+│   └── exaone35_7_8b_colab_server.ipynb   # k-safety-law-rag의 exaone_colab_pro_server.ipynb 재사용/복사
 └── tests/
     └── test_analysis.py
 ```
@@ -401,7 +402,7 @@ NAVER_CLIENT_ID=
 NAVER_CLIENT_SECRET=
 
 LLM_PROVIDER=local_ollama          # local_ollama | remote_openai
-LLM_MODEL=qwen2.5:3b               # 운영 전환 시 Qwen/Qwen2.5-14B-Instruct
+LLM_MODEL=exaone3.5:2.4b           # 운영 전환 시 LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct
 LLM_API_BASE=http://localhost:11434
 LLM_API_KEY=dummy
 
@@ -426,7 +427,7 @@ DB_PATH=data/app.db
 ### Phase 3 — LLM 비교/추천
 - [ ] `llm_agent.py`: 기능 비교 프롬프트 + JSON 검증
 - [ ] 매수 타이밍 판단 프롬프트
-- [ ] 로컬 qwen2.5:3b로 프롬프트 반복 검증
+- [ ] 로컬 EXAONE-3.5-2.4B-Instruct로 프롬프트 반복 검증
 
 ### Phase 4 — 백엔드/프론트엔드
 - [ ] Flask REST API 구현 (8번 섹션 엔드포인트)
@@ -434,7 +435,7 @@ DB_PATH=data/app.db
 - [ ] 가격 추이 차트 연동
 
 ### Phase 5 — 운영 모델 전환 & 알림 (확장)
-- [ ] Colab Pro + Qwen2.5-14B-Instruct로 전환
+- [ ] Colab Pro + EXAONE-3.5-7.8B-Instruct로 전환
 - [ ] 가격 알림(`price_alerts`) 기능 구현
 - [ ] 알림 발송 채널 연동 (이메일 우선, 이후 슬랙/텔레그램 확장 가능)
 
@@ -465,5 +466,5 @@ DB_PATH=data/app.db
 1. 가격/통계 숫자는 반드시 코드에서 계산 후 LLM 프롬프트에 주입한다 — LLM이 직접 계산하게 하지 않는다.
 2. 스펙 큐레이션 JSON에 없는 값은 LLM이 "확인 불가"로만 답하도록 시스템 프롬프트에 명시한다 (환각 방지).
 3. 크롤링이 필요한 시점이 오면 반드시 먼저 사용자에게 확인 — robots.txt 준수, 요청 간격 확보 없이 진행하지 않는다.
-4. 로컬 개발 중에는 `qwen2.5:3b`로 반복 검증하고, 데모/발표 직전에만 Colab `Qwen2.5-14B-Instruct`로 전환한다.
+4. 로컬 개발 중에는 `EXAONE-3.5-2.4B-Instruct`로 반복 검증하고, 데모/발표 직전에만 Colab `EXAONE-3.5-7.8B-Instruct`로 전환한다.
 5. `.env`, `data/app.db`는 git에 커밋하지 않는다 (`.gitignore` 확인).
