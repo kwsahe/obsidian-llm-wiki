@@ -27,12 +27,12 @@
 - 포트폴리오 심사자: 데이터 엔지니어링(수집/적재/스케줄링) + AI(LLM 비교·추천) + 풀스택(대시보드)을 한 프로젝트에서 확인
 
 ### 이 프로젝트로 보여주려는 역량
-| 역량 | 어디서 드러나는가 |
-|---|---|
-| 데이터 엔지니어링 | API 자동 수집, 시계열 DB 설계, 스케줄러 파이프라인 |
-| LLM 활용 | 구조화된 비교 리포트 생성, 가격 추이 기반 판단 |
-| 풀스택 | Flask 백엔드 + 대시보드 프론트엔드 |
-| 프로덕트 감각 | 다나와/에누리 대비 차별화 지점(매수 타이밍)을 스스로 정의 |
+| 역량        | 어디서 드러나는가                         |
+| --------- | --------------------------------- |
+| 데이터 엔지니어링 | API 자동 수집, 시계열 DB 설계, 스케줄러 파이프라인  |
+| LLM 활용    | 구조화된 비교 리포트 생성, 가격 추이 기반 판단       |
+| 풀스택       | Flask 백엔드 + 대시보드 프론트엔드            |
+| 프로덕트 감각   | 다나와/에누리 대비 차별화 지점(매수 타이밍)을 스스로 정의 |
 
 ---
 
@@ -123,6 +123,7 @@
 | 스케줄러 | APScheduler (Python 프로세스 내 실행) 또는 Windows 작업 스케줄러 | cron 대체 (Windows 환경) |
 | LLM | EXAONE-3.5-7.8B-Instruct (Colab Pro, 운영) / EXAONE-3.5-2.4B-Instruct (Ollama, 로컬 개발) | 4번 섹션에서 상세 |
 | LLM 오케스트레이션 | LangGraph (`langgraph` 패키지) | 비교/매수타이밍/베스트픽 3개 작업이 공유하는 "생성→검증→재시도" 흐름을 StateGraph로 formalize. 4.8절 참고 |
+| DB Coder 에이전트 | LangGraph + `sqlparse` (SQL 검증) | 자연어→SQL 읽기 전용 분석 에이전트, 관리자 전용. 4.9절 참고 |
 | 프론트엔드 | Flask 템플릿(Jinja2) + Chart.js (가격 추이 그래프) | O2O 프로젝트 패턴 재사용 |
 | 시각화 | Chart.js 또는 Plotly | 가격 추이, 비교 레이더 차트 |
 
@@ -308,6 +309,33 @@ llm_pipeline = graph.compile()
 
 - 재시도 횟수(`max_retries`)를 초과하고도 검증에 실패하면 `result`에 "확인 불가" 수준의 안전한 fallback 메시지를 채워서 종료한다 (조용히 실패하지 않고, 프론트에는 "AI 응답 생성에 실패했습니다" 같은 명확한 상태를 보여준다).
 - 세 작업의 차이는 오직 `prompt_router_node`의 분기와 `persist_node`의 저장 테이블뿐이라, 새 LLM 작업 유형이 추가돼도 그래프 구조를 그대로 재사용할 수 있다.
+
+### 4.9 DB Coder 에이전트 (읽기 전용 자연어 분석, 관리자용)
+자연어 질문("지난주 대비 이번주 평균가가 오른 상품 알려줘")을 SQL로 변환해 실행하는 별도 에이전트. **DB 관리(스키마 변경/데이터 수정)까지 자동화하지 않고, 조회(SELECT)만 허용한다** — LLM이 환각으로 `DELETE`/`DROP TABLE` 같은 쿼리를 생성해 실제로 실행되는 사고를 원천 차단하기 위해서다.
+
+**State 정의**
+```python
+class DBCoderState(TypedDict):
+    nl_question: str
+    schema_context: str          # 6번 섹션 스키마를 문자열로 주입
+    generated_sql: Optional[str]
+    validation_error: Optional[str]
+    query_result: Optional[list]
+    answer: Optional[str]        # 결과를 자연어로 요약
+    retry_count: int
+    max_retries: int
+```
+
+**노드 구성 및 안전장치**
+| 노드 | 역할 | 안전장치 |
+|---|---|---|
+| `sql_generation_node` | DB 스키마를 컨텍스트로 주고 LLM이 SQL 생성 | 시스템 프롬프트에 "SELECT 문만 작성" 명시 |
+| `sql_validation_node` | `sqlparse`로 파싱해 키워드 화이트리스트 검증 (`SELECT`/`WITH`/`FROM`/`WHERE`/`JOIN`/`GROUP BY`/`ORDER BY`/`LIMIT`만 허용) | `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`CREATE`가 하나라도 포함되면 즉시 거부, 재시도 없이 종료 |
+| `sql_execution_node` | 검증 통과한 쿼리만 실행 | **DB 연결 자체를 읽기 전용으로 오픈** (SQLite URI `file:app.db?mode=ro`) — 애플리케이션 로직뿐 아니라 연결 단계에서도 쓰기를 물리적으로 차단하는 이중 안전장치 |
+| `result_formatting_node` | 조회 결과를 자연어로 요약 | 결과에 없는 값은 언급하지 않도록 지시 |
+
+- 이 에이전트는 `/api/admin/query` 같은 **관리자 전용/로컬 전용 엔드포인트**로만 노출한다. 일반 사용자에게 개방하지 않는다.
+- `sql_validation_node`에서 거부된 경우는 4.8의 재시도 루프와 달리 **재시도하지 않고 즉시 거부**한다 (위험 쿼리를 다르게 표현해 우회 생성하는 것을 막기 위함).
 
 ---
 
@@ -606,6 +634,7 @@ DB_PATH=data/app.db
 - [ ] 카탈로그 상세 페이지에서 스펙 자동 파싱 검토 (크롤링이 아닌 공식 페이지 정적 파싱 범위 내에서, robots.txt 준수)
 - [ ] 카테고리 2개 이상으로 확장
 - [ ] 사용자 계정/찜 목록 기능
+- [ ] DB Coder 에이전트(4.9) 구현 — `sqlparse` 검증 + 읽기전용 DB 연결 + 관리자 전용 엔드포인트
 
 ---
 
@@ -633,3 +662,5 @@ DB_PATH=data/app.db
 4. 로컬 개발 중에는 `EXAONE-3.5-2.4B-Instruct`로 반복 검증하고, 데모/발표 직전에만 Colab `EXAONE-3.5-7.8B-Instruct`로 전환한다.
 5. `.env`, `data/app.db`는 git에 커밋하지 않는다 (`.gitignore` 확인).
 6. LLM 작업(비교/매수타이밍/베스트픽)을 새로 추가할 때는 `llm_agent.py`의 기존 함수 형태로 새로 짜지 말고, 4.8절의 LangGraph `prompt_router_node`/`persist_node`에 분기를 추가하는 방식으로 확장한다 (그래프 구조를 중복 구현하지 않는다).
+7. DB Coder 에이전트(4.9)가 생성한 SQL은 반드시 읽기 전용 DB 연결 + 키워드 화이트리스트 검증을 통과한 것만 실행한다. DDL/DML 키워드가 포함되면 재시도 없이 즉시 거부하고, 절대 자동으로 쓰기 쿼리를 실행하지 않는다.
+8. 스펙 데이터 확보를 위해 다나와/에누리 등 타 가격비교 서비스를 크롤링하지 않는다 — 이 프로젝트의 핵심 가치 제안(0번 섹션, "완전히 합법적인 데이터 파이프라인")과 정면으로 충돌하며, 스펙 비교 데이터는 해당 서비스들의 핵심 비즈니스 자산이라 법적 리스크가 일반 크롤링보다 크다. 스펙 자동화가 필요하면 제조사 공식 페이지 등 리스크가 낮은 대안을 먼저 사용자와 상의한다.
