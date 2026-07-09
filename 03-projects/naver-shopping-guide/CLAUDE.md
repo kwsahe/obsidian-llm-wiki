@@ -19,7 +19,8 @@
 ### 핵심 가치 제안
 1. **기능별 비교 + 추천 이유**: "A 제품이 배터리는 낫지만 B가 가성비 우위" 같은 자연어 근거 제시
 2. **가격 추이 기반 매수 타이밍 판단**: 단순 현재가 비교가 아니라 "최근 N일간 이 정도면 저점 구간"까지 판단
-3. **완전히 합법적인 데이터 파이프라인**: 크롤링/우회 없이 공식 API만 사용
+3. **카테고리별 자동 베스트픽 추천**: 사용자가 상품을 직접 고르지 않아도, 카테고리 안에서 "가성비 최고"와 "성능 최고" 상품을 자동으로 뽑아 이유와 함께 제시
+4. **완전히 합법적인 데이터 파이프라인**: 크롤링/우회 없이 공식 API만 사용
 
 ### 대상 사용자
 - 실사용: 특정 카테고리 구매를 고민 중인 일반 소비자 (본인이 직접 사용 가능한 데모)
@@ -53,6 +54,12 @@
 1. 사용자가 특정 상품에 "목표가" 등록
 2. 스케줄러가 매일 가격을 체크하다가 목표가 이하로 떨어지면 알림 생성 (이메일/파일 로그, 추후 슬랙 등 확장)
 
+### 시나리오 4 — 카테고리 베스트픽 자동 추천
+1. 사용자가 카테고리 화면에 진입 (상품을 직접 고르지 않아도 됨)
+2. "이 카테고리 추천" 카드에 **가성비 최고 상품**과 **성능 최고 상품**이 각각 배지로 표시됨
+3. 각 배지를 누르면 "왜 이 상품이 뽑혔는지"에 대한 LLM의 자연어 설명이 펼쳐짐 (근거가 된 스펙/가격 수치 함께 표시)
+4. 이 추천은 매일 가격 수집 직후 자동 갱신되므로, 가격이 바뀌면 가성비 최고 상품도 바뀔 수 있음
+
 ---
 
 ## 2. 시스템 아키텍처
@@ -77,19 +84,23 @@
  ┌─────────────────────────────────────────┐
  │  DB (SQLite → 필요시 PostgreSQL)           │
  │  categories / products / specs /          │
- │  price_history / comparison_reports       │
+ │  price_history / comparison_reports /     │
+ │  category_recommendations                 │
  └───────────────┬───────────────────────────┘
                  ▼
  ┌─────────────────────────────────────────┐
  │  analysis.py                              │
  │  - 가격 통계 계산 (최고/최저/평균/백분위)      │
  │  - 스펙 정규화 및 비교표 생성                 │
+ │  - 카테고리별 성능 점수/가성비 점수 계산       │
+ │    (O2O demand-score 가중합산 방식 재사용)   │
  └───────────────┬───────────────────────────┘
                  ▼
  ┌─────────────────────────────────────────┐
  │  llm_agent.py                             │
  │  - 비교 리포트 생성 프롬프트                  │
  │  - 매수 타이밍 판단 프롬프트                  │
+ │  - 카테고리 베스트픽(가성비/성능) 추천 프롬프트  │
  │  - JSON 스키마 강제 + 검증                   │
  └───────────────┬───────────────────────────┘
                  ▼
@@ -199,6 +210,33 @@ Qwen 계열을 계속 쓰기보다 이번 프로젝트에서는 **EXAONE-3.5 계
 }
 ```
 
+### 4.7 프롬프트 예시 (카테고리 베스트픽 추천)
+```text
+[시스템]
+당신은 상품 추천 전문가입니다. 아래 성능 점수/가성비 점수는 이미 계산되어
+있으니 그대로 인용하고, 점수를 직접 계산하거나 새로운 숫자를 만들어내지
+마세요. 각 베스트픽이 왜 선정됐는지 스펙과 가격을 근거로 설명하세요.
+
+[카테고리 점수 데이터 (코드에서 미리 계산, analysis.py)]
+{
+  "category": "무선 이어폰",
+  "products": [
+    {"name": "A", "price": 89000, "performance_score": 82, "value_score": 71,
+     "battery_hours": 8, "anc": true, "weight_g": 5.2},
+    {"name": "B", "price": 65000, "performance_score": 68, "value_score": 79,
+     "battery_hours": 6, "anc": false, "weight_g": 4.8}
+  ],
+  "best_performance_candidate": "A",
+  "best_value_candidate": "B"
+}
+
+[출력 형식(JSON)]
+{
+  "best_performance": {"product": "A", "reason": "..."},
+  "best_value": {"product": "B", "reason": "..."}
+}
+```
+
 ---
 
 ## 5. 데이터 소스 & API 연동 상세
@@ -230,12 +268,17 @@ Qwen 계열을 계속 쓰기보다 이번 프로젝트에서는 **EXAONE-3.5 계
 - **주의**: 카테고리 코드가 네이버쇼핑 자체 분류 체계를 따르므로, 사용하려는 카테고리의 코드를 먼저 조회해야 함
 
 ### 5.3 MVP 스펙 큐레이션 데이터
-API가 주지 않는 스펙 정보는 수동으로 관리한다.
+API가 주지 않는 스펙 정보는 수동으로 관리한다. `score_weights`는 카테고리 베스트픽 추천(6번/8번 섹션)에서 성능/가성비 점수를 계산할 때 사용하는 가중치이며, 카테고리마다 의미 있는 스펙이 다르므로 카테고리별로 직접 정의한다.
 
 ```json
 // data/specs/무선이어폰.json
 {
   "category": "무선 이어폰",
+  "score_weights": {
+    "battery_hours": {"weight": 0.4, "direction": "higher_better"},
+    "anc":           {"weight": 0.3, "direction": "boolean_bonus"},
+    "weight_g":       {"weight": 0.3, "direction": "lower_better"}
+  },
   "products": [
     {
       "product_id": "네이버쇼핑_productId와_매칭",
@@ -252,6 +295,14 @@ API가 주지 않는 스펙 정보는 수동으로 관리한다.
 ```
 
 이 파일은 카테고리를 추가할 때마다 수동으로 채워야 하는 유일한 비자동화 지점이며, 이후 Phase에서 카탈로그 상세 페이지 파싱으로 자동화할 수 있는 확장 여지를 남겨둔다.
+
+### 5.4 성능 점수 / 가성비 점수 계산 방식
+O2O-Demand-Forecasting-Solution의 `calculate_demand_score()`(Min-Max 정규화 + 가중합산) 패턴을 그대로 재사용한다.
+
+1. `score_weights`에 정의된 각 스펙 값을 카테고리 내 상품군 기준으로 Min-Max 정규화(0~100). `direction`이 `lower_better`면 정규화 전에 역수 처리, `boolean_bonus`면 true/false를 100/0으로 매핑.
+2. **성능 점수(performance_score)** = 정규화된 스펙 점수의 가중합산 (가격 반영 안 함)
+3. **가성비 점수(value_score)** = `performance_score / normalized_price` 형태로 계산 (가격이 낮을수록, 성능이 높을수록 점수가 올라가도록 정규화된 가격의 역수를 곱하는 방식)
+4. 두 점수 모두 **코드에서 계산 완료 후** LLM에는 결과값만 전달한다 (4.4의 "숫자는 코드에서 계산" 원칙과 동일).
 
 ---
 
@@ -311,6 +362,20 @@ CREATE TABLE price_alerts (
     triggered INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 카테고리별 가성비/성능 베스트픽 (스케줄러가 매일 가격 수집 후 갱신)
+CREATE TABLE category_recommendations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER REFERENCES categories(id),
+    best_value_product_id INTEGER REFERENCES products(id),
+    best_value_score REAL,
+    best_value_reason TEXT,          -- LLM 생성 설명
+    best_performance_product_id INTEGER REFERENCES products(id),
+    best_performance_score REAL,
+    best_performance_reason TEXT,     -- LLM 생성 설명
+    llm_model TEXT,
+    generated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ---
@@ -321,14 +386,17 @@ CREATE TABLE price_alerts (
 # scheduler.py (설계 스케치)
 from apscheduler.schedulers.blocking import BlockingScheduler
 from collector import collect_prices_for_all_products
-from analysis import check_price_alerts
+from analysis import check_price_alerts, recompute_category_recommendations
+from llm_agent import generate_best_pick_reasons
 
 scheduler = BlockingScheduler(timezone="Asia/Seoul")
 
 @scheduler.scheduled_job("cron", hour=9, minute=0)
 def daily_price_collection():
-    collect_prices_for_all_products()   # price_history에 오늘자 가격 적재
-    check_price_alerts()                # 목표가 도달 여부 확인 후 알림
+    collect_prices_for_all_products()          # price_history에 오늘자 가격 적재
+    check_price_alerts()                       # 목표가 도달 여부 확인 후 알림
+    scores = recompute_category_recommendations()  # 카테고리별 성능/가성비 점수 재계산
+    generate_best_pick_reasons(scores)         # LLM 설명 생성 후 category_recommendations upsert
 
 if __name__ == "__main__":
     scheduler.start()
@@ -348,6 +416,7 @@ if __name__ == "__main__":
 | `GET` | `/api/products/{id}/price-history?days=90` | 가격 추이 조회 |
 | `POST` | `/api/compare` | 상품 ID 목록 + 사용자 우선순위 → LLM 비교 리포트 생성 |
 | `GET` | `/api/products/{id}/buy-timing` | 매수 타이밍 판단 조회 |
+| `GET` | `/api/categories/{id}/best-picks` | 카테고리 내 가성비/성능 최고 상품 + LLM 추천 이유 조회 (스케줄러가 미리 계산해둔 값을 반환) |
 | `POST` | `/api/alerts` | 가격 알림 등록 |
 | `POST` | `/api/collect` | 수동 재수집 트리거 (관리자용) |
 | `GET` | `/health` | 서버 상태 확인 |
@@ -373,7 +442,7 @@ if __name__ == "__main__":
 - 내비게이션은 모바일에서 하단 고정 탭바, 데스크톱에서는 상단 내비게이션으로 전환
 
 ### 9.3 화면 구성 (카드 기반 UI)
-- **홈/카테고리 선택**: 상단 "요약 카드"(등록 카테고리 수, 최근 비교 리포트 수 등 — wallet 앱의 잔액 카드 자리에 대응) + 하단 카테고리 리스트 카드
+- **홈/카테고리 선택**: 상단 "요약 카드"(등록 카테고리 수, 최근 비교 리포트 수 등 — wallet 앱의 잔액 카드 자리에 대응) + "이 카테고리 추천" 카드(가성비 최고/성능 최고 배지, 탭하면 LLM 추천 이유 펼침) + 하단 카테고리 리스트 카드
 - **비교 화면**: 상품을 리스트/거래내역 카드 스타일로 나열(가격/판매처) + "우선순위 선택" 필터 + "AI 비교 리포트 생성" 버튼
 - **상품 상세 화면**: 가격 추이 라인 차트(Chart.js) + 매수 타이밍 코멘트를 인사이트 카드 형태로 배치
 - **비교 리포트 화면**: 기능별 승자 표 + LLM 생성 추천 문단을 카드 섹션으로 분리
@@ -441,10 +510,12 @@ DB_PATH=data/app.db
 - [ ] `price_history` 적재 로직 구현
 - [ ] `scheduler.py` 구현 (일 1회 수집)
 - [ ] 가격 통계 계산(`analysis.py`): 최고/최저/평균/백분위
+- [ ] 카테고리별 성능 점수/가성비 점수 계산(`analysis.py`, 5.4 방식) 구현 + 단위 테스트
 
 ### Phase 3 — LLM 비교/추천
 - [ ] `llm_agent.py`: 기능 비교 프롬프트 + JSON 검증
 - [ ] 매수 타이밍 판단 프롬프트
+- [ ] 카테고리 베스트픽(가성비/성능) 추천 프롬프트 + `category_recommendations` upsert 로직
 - [ ] 로컬 EXAONE-3.5-2.4B-Instruct로 프롬프트 반복 검증
 
 ### Phase 4 — 백엔드/프론트엔드
@@ -468,6 +539,7 @@ DB_PATH=data/app.db
 
 ## 13. 테스트 전략
 - `analysis.py`의 통계 계산 함수는 알려진 입력값으로 단위 테스트 (평균/백분위 계산 정확성 검증 — LLM이 잘못된 숫자를 인용하지 않도록 원천 차단)
+- `analysis.py`의 성능/가성비 점수 계산 함수도 알려진 스펙 조합으로 단위 테스트 (Min-Max 정규화, `lower_better`/`boolean_bonus` 방향성 처리가 의도대로 동작하는지 검증)
 - `llm_agent.py`의 JSON 파싱은 실패 케이스(스키마 어긋난 응답)에 대한 재시도 로직 테스트
 - API 엔드포인트는 실제 네이버 API 대신 mock 응답으로 통합 테스트
 
